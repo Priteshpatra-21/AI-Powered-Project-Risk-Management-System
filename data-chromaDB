@@ -1,29 +1,65 @@
 import pandas as pd
+import time
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import DataFrameLoader
-from langchain_text_splitters import CharacterTextSplitter
 
-# 1. Load your Kaggle CSV
-df = pd.read_csv("project_management_risk.csv")
+# 1. LOAD ALL THREE DATASETS
+projects_df = pd.read_csv('project_risk_raw_dataset.csv').head(100)
+txns_df = pd.read_csv('transaction.csv')
+market_df = pd.read_csv('market_trends.csv')
 
-# 2. Combine columns into a single context string for the AI to "read"
-# Adjust column names based on your specific Kaggle file
-df['context'] = df.apply(lambda x: f"Project: {x['Project_Name']}. Status: {x['Status']}. Risk Score: {x['Risk_Score']}. Budget: {x['Budget']}.", axis=1)
+# 2. SUMMARIZE MARKET TRENDS (Get the latest snapshot)
+# We take the most recent value for each economic indicator
+latest_market = market_df.sort_values('Date').groupby('Indicator').tail(1)
+market_context_str = " | ".join([
+    f"{row['Indicator']}: {row['Value']} (Sentiment: {row['Market_Sentiment']})" 
+    for _, row in latest_market.iterrows()
+])
 
-loader = DataFrameLoader(df, page_content_column="context")
-docs = loader.load()
+# 3. DEFINE THE ENRICHMENT FUNCTION
+def enrich_project_data(row):
+    p_id = row['Project_ID']
+    
+    # Filter transactions for this project
+    p_txns = txns_df[txns_df['Project_ID'] == p_id]
+    total_invoiced = p_txns['Amount_USD'].sum()
+    overdue_txns = p_txns[p_txns['Payment_Status'] == 'Overdue']
+    overdue_amt = overdue_txns['Amount_USD'].sum()
+    
+    # Create the unified AI context string
+    context = (
+        f"PROJECT PROFILE: {p_id} ({row['Project_Type']}). "
+        f"PHASE: {row['Project_Phase']}. RISK LEVEL: {row['Risk_Level']}. "
+        f"INTERNAL HEALTH: Complexity {row['Complexity_Score']}/10, "
+        f"Schedule Pressure {row['Schedule_Pressure']}, "
+        f"Budget Util {row['Budget_Utilization_Rate']}. "
+        f"FINANCIAL STATUS: Total Invoiced ${total_invoiced:,.2f}. "
+        f"Overdue Amount: ${overdue_amt:,.2f} ({len(overdue_txns)} invoices). "
+        f"EXTERNAL MARKET CONTEXT: {market_context_str}."
+    )
+    return context
 
-# 3. Split data into manageable chunks
-text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-texts = text_splitter.split_documents(docs)
+# 4. APPLY THE ENRICHMENT
+print("Processing project stories...")
+projects_df['master_context'] = projects_df.apply(enrich_project_data, axis=1)
 
-# 4. Initialize ChromaDB and Embeddings
-# This will create a local folder 'risk_vector_db'
-vector_db = Chroma.from_documents(
-    documents=texts,
-    embedding=OpenAIEmbeddings(),
-    persist_directory="./risk_vector_db"
+# 5. VECTORIZE TO CHROMADB (First 100 Projects)
+gemini_embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/gemini-embedding-001",
+    task_type="retrieval_document"
 )
 
-print("✅ Kaggle Dataset successfully vectorized in ./risk_vector_db")
+loader = DataFrameLoader(projects_df, page_content_column="master_context")
+docs = loader.load()
+
+# Create the master database
+master_db = Chroma.from_documents(
+    documents=docs,
+    embedding=gemini_embeddings,
+    persist_directory="./master_risk_brain"
+)
+
+print(f"✅ Master Brain created for {len(projects_df)} projects.")
+print(f"Sample Context for {projects_df.iloc[0]['Project_ID']}:")
+print(projects_df.iloc[0]['master_context'])
