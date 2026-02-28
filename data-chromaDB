@@ -1,0 +1,29 @@
+import pandas as pd
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.document_loaders import DataFrameLoader
+from langchain_text_splitters import CharacterTextSplitter
+
+# 1. Load your Kaggle CSV
+df = pd.read_csv("project_management_risk.csv")
+
+# 2. Combine columns into a single context string for the AI to "read"
+# Adjust column names based on your specific Kaggle file
+df['context'] = df.apply(lambda x: f"Project: {x['Project_Name']}. Status: {x['Status']}. Risk Score: {x['Risk_Score']}. Budget: {x['Budget']}.", axis=1)
+
+loader = DataFrameLoader(df, page_content_column="context")
+docs = loader.load()
+
+# 3. Split data into manageable chunks
+text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+texts = text_splitter.split_documents(docs)
+
+# 4. Initialize ChromaDB and Embeddings
+# This will create a local folder 'risk_vector_db'
+vector_db = Chroma.from_documents(
+    documents=texts,
+    embedding=OpenAIEmbeddings(),
+    persist_directory="./risk_vector_db"
+)
+
+print("✅ Kaggle Dataset successfully vectorized in ./risk_vector_db")
