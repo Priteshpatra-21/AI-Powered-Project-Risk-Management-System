@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
-import boto3  # New: AWS SDK
+import boto3  
 from typing import Annotated, TypedDict, List
 
 # Core Agentic Imports
@@ -14,22 +14,16 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 # --- 1. LIGHT-THEME UI SETUP ---
 st.set_page_config(page_title="Risk Intel Pro", layout="wide", page_icon="🛡️")
 
-# Custom CSS for High Visibility (Light Mode)
 st.markdown("""
     <style>
-    /* White Background & Dark Text */
     .stApp { background-color: #ffffff; color: #1e293b; }
-    
-    /* Crisp Header */
     .main-header {
-        background: #1e40af; /* Deep Navy Blue */
+        background: #1e40af; 
         padding: 25px; border-radius: 12px; text-align: center;
         margin-bottom: 30px; border-bottom: 5px solid #3b82f6;
     }
     .main-header h1 { color: #ffffff !important; font-size: 2.5rem; margin: 0; }
     .main-header p { color: #dbeafe; font-size: 1.1rem; }
-    
-    /* High-Contrast Metric Cards */
     .metric-container {
         background: #f8fafc; border: 2px solid #e2e8f0;
         padding: 20px; border-radius: 12px; text-align: center;
@@ -37,8 +31,6 @@ st.markdown("""
     }
     .metric-label { color: #64748b; font-weight: 600; font-size: 0.9rem; text-transform: uppercase; }
     .metric-value { color: #1e293b; font-size: 2rem; font-weight: 800; }
-    
-    /* Chat Visibility */
     .stChatMessage { background-color: #f1f5f9 !important; border: 1px solid #cbd5e1 !important; color: #000000 !important; }
     </style>
     
@@ -50,12 +42,12 @@ st.markdown("""
 
 # --- 2. AUTH & MODEL DISCOVERY ---
 try:
-    # Google Auth
+    # These secrets are managed in the Streamlit Cloud Settings dashboard
     api_key = st.secrets["GOOGLE_API_KEY"]
     os.environ["GOOGLE_API_KEY"] = api_key
     genai.configure(api_key=api_key)
     
-    # AWS S3 Auth
+    # AWS S3 Auth - pulls from st.secrets automatically
     s3_client = boto3.client(
         "s3",
         aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
@@ -81,7 +73,6 @@ working_model_id = discover_stable_model()
 # --- 3. DATA ENGINE ---
 @st.cache_data
 def load_data_from_s3(file_key):
-    """Fetches CSV from S3 bucket without saving it locally."""
     try:
         obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=file_key)
         df = pd.read_csv(obj['Body'])
@@ -91,16 +82,15 @@ def load_data_from_s3(file_key):
         st.error(f"S3 Load Error ({file_key}): {e}")
         return pd.DataFrame()
 
-# Load the 3 datasets from S3
 p_df = load_data_from_s3('project_risk_raw_dataset.csv')
 m_df = load_data_from_s3('market_trends.csv')
 t_df = load_data_from_s3('transaction.csv')
 
-# Helper to safely grab columns
-#def get_safe_col(df, options):
-    #for opt in options:
-        #if opt in df.columns: return opt
-    #return None
+# Helper to safely grab columns (Fixed: Uncommented)
+def get_safe_col(df, options):
+    for opt in options:
+        if opt in df.columns: return opt
+    return None
 
 # --- 4. AGENTIC BRAIN ---
 llm = ChatGoogleGenerativeAI(model=working_model_id, temperature=0.1)
@@ -108,21 +98,18 @@ llm = ChatGoogleGenerativeAI(model=working_model_id, temperature=0.1)
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], "History"]
 
-# Agent 1: Project Risk Manager (Generalist)
 def manager_agent(state: AgentState):
     query = state['messages'][-1].content
     prompt = f"PROJECT DATA:\n{p_df.describe().to_string()}\n\nROLE: Strategic Risk Manager. Provide a high-level strategic overview or mitigation for: {query}"
     res = llm.invoke(prompt)
     return {"messages": [AIMessage(content=res.content, name="Project_Risk_Manager")]}
 
-# Agent 2: Market Analysis Agent
 def market_agent(state: AgentState):
     query = state['messages'][-1].content
     prompt = f"MARKET DATA:\n{m_df.tail(10).to_string()}\n\nROLE: Market Analyst. Analyze financial trends, inflation, and market sentiment regarding: {query}"
     res = llm.invoke(prompt)
     return {"messages": [AIMessage(content=res.content, name="Market_Analyst")]}
 
-# Agent 3: Risk Scoring Agent (Transactions)
 def scoring_agent(state: AgentState):
     query = state['messages'][-1].content
     txn_summary = t_df.groupby('Payment_Status')['Amount_USD'].sum().to_string()
@@ -130,7 +117,6 @@ def scoring_agent(state: AgentState):
     res = llm.invoke(prompt)
     return {"messages": [AIMessage(content=res.content, name="Risk_Scorer")]}
 
-# Agent 4: Project Status Tracking Agent
 def status_agent(state: AgentState):
     query = state['messages'][-1].content
     status_summary = p_df[['Project_ID', 'Project_Phase', 'Team_Turnover_Rate']].head(10).to_string()
@@ -138,7 +124,6 @@ def status_agent(state: AgentState):
     res = llm.invoke(prompt)
     return {"messages": [AIMessage(content=res.content, name="Status_Tracker")]}
 
-# Agent 5: Reporting Agent
 def reporting_agent(state: AgentState):
     query = state['messages'][-1].content
     prompt = f"ROLE: Reporting Officer. Generate a structured executive report or analytic summary for: {query}"
@@ -173,7 +158,7 @@ for node in ["manager", "market", "scoring", "status", "reporting"]:
 
 agent_brain = builder.compile()
 
-# --- 5. DASHBOARD (High Visibility) ---
+# --- 5. DASHBOARD ---
 risk_col = get_safe_col(p_df, ['Risk_Level', 'Risk'])
 complexity_col = get_safe_col(p_df, ['Complexity_Score', 'Complexity'])
 sentiment_col = get_safe_col(m_df, ['Market_Sentiment', 'Sentiment'])
@@ -202,13 +187,13 @@ with c3:
     </div>""", unsafe_allow_html=True)
 
 with c4:
-    last_sent = m_df[sentiment_col].iloc[-1] if sentiment_col else 0
+    last_sent = m_df[sentiment_col].iloc[-1] if sentiment_col and not m_df.empty else 0
     st.markdown(f"""<div class="metric-container" style="border-top: 5px solid #10b981;">
         <div class="metric-label">Market Sentiment</div>
         <div class="metric-value" style="color: #10b981;">{last_sent:.2f}</div>
     </div>""", unsafe_allow_html=True)
 
-st.write("") # Spacer
+st.write("") 
 
 col_left, col_right = st.columns([3, 2])
 
