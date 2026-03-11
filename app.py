@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
+import boto3  # New: AWS SDK
 from typing import Annotated, TypedDict, List
 
 # Core Agentic Imports
@@ -48,12 +49,22 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. AUTH & MODEL DISCOVERY ---
-if "GOOGLE_API_KEY" in st.secrets:
+try:
+    # Google Auth
     api_key = st.secrets["GOOGLE_API_KEY"]
     os.environ["GOOGLE_API_KEY"] = api_key
     genai.configure(api_key=api_key)
-else:
-    st.error("🔑 API Key Missing!")
+    
+    # AWS S3 Auth
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"],
+        region_name=st.secrets["AWS_DEFAULT_REGION"]
+    )
+    BUCKET_NAME = st.secrets["S3_BUCKET"]
+except Exception as e:
+    st.error("🔑 Credentials Missing in Secrets!")
     st.stop()
 
 @st.cache_resource
@@ -69,29 +80,27 @@ working_model_id = discover_stable_model()
 
 # --- 3. DATA ENGINE ---
 @st.cache_data
-def load_data():
+def load_data_from_s3(file_key):
+    """Fetches CSV from S3 bucket without saving it locally."""
     try:
-        p_df = pd.read_csv('project_risk_raw_dataset.csv')
-        m_df = pd.read_csv('market_trends.csv')
-        t_df = pd.read_csv('transaction.csv')
-        
-        # Clean column names
-        p_df.columns = p_df.columns.str.strip()
-        m_df.columns = m_df.columns.str.strip()
-        t_df.columns = t_df.columns.str.strip()
-        
-        return p_df, m_df, t_df
+        obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=file_key)
+        df = pd.read_csv(obj['Body'])
+        df.columns = df.columns.str.strip()
+        return df
     except Exception as e:
-        st.error(f"Data Load Error: {e}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        st.error(f"S3 Load Error ({file_key}): {e}")
+        return pd.DataFrame()
 
-p_df, m_df, t_df = load_data()
+# Load the 3 datasets from S3
+p_df = load_data_from_s3('project_risk_raw_dataset.csv')
+m_df = load_data_from_s3('market_trends.csv')
+t_df = load_data_from_s3('transaction.csv')
 
 # Helper to safely grab columns
-def get_safe_col(df, options):
-    for opt in options:
-        if opt in df.columns: return opt
-    return None
+#def get_safe_col(df, options):
+    #for opt in options:
+        #if opt in df.columns: return opt
+    #return None
 
 # --- 4. AGENTIC BRAIN ---
 llm = ChatGoogleGenerativeAI(model=working_model_id, temperature=0.1)
